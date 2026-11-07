@@ -223,9 +223,12 @@ class PulseStore:
     async def get_issue(self, fingerprint: str) -> IssueGroupSnapshot | None:
         return await asyncio.to_thread(self._sync_get_issue, fingerprint)
 
-    def _sync_register_monitor(self, req: MonitorRegisterRequest) -> MonitorSnapshot:
-        now = _utc_now()
-        initial_due = now + timedelta(seconds=req.interval_seconds + req.grace_seconds)
+    def _sync_register_monitor(
+        self, req: MonitorRegisterRequest, now: datetime | None = None
+    ) -> MonitorSnapshot:
+        current_time = _utc_now() if now is None else _ensure_tz(now)
+        assert current_time is not None
+        initial_due = current_time + timedelta(seconds=req.interval_seconds + req.grace_seconds)
 
         with self._lock, self.session_factory() as session, session.begin():
             stmt = select(CronMonitorRow).where(CronMonitorRow.slug == req.slug).with_for_update()
@@ -242,7 +245,7 @@ class PulseStore:
                     next_due_at=initial_due,
                     consecutive_misses=0,
                     webhook_url=req.webhook_url,
-                    updated_at=now,
+                    updated_at=current_time,
                 )
                 session.add(row)
             else:
@@ -250,15 +253,17 @@ class PulseStore:
                 row.interval_seconds = req.interval_seconds
                 row.grace_seconds = req.grace_seconds
                 row.webhook_url = req.webhook_url
-                row.updated_at = now
+                row.updated_at = current_time
                 if row.next_due_at is None:
                     row.next_due_at = initial_due
 
             session.flush()
             return _row_to_monitor_snapshot(row)
 
-    async def register_monitor(self, req: MonitorRegisterRequest) -> MonitorSnapshot:
-        return await asyncio.to_thread(self._sync_register_monitor, req)
+    async def register_monitor(
+        self, req: MonitorRegisterRequest, now: datetime | None = None
+    ) -> MonitorSnapshot:
+        return await asyncio.to_thread(self._sync_register_monitor, req, now)
 
     def _sync_record_ping(self, slug: str, now: datetime | None = None) -> MonitorSnapshot:
         current_time = _utc_now() if now is None else _ensure_tz(now)

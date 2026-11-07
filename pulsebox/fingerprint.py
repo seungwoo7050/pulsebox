@@ -23,11 +23,12 @@ def normalize_stacktrace(stacktrace: str) -> str:
     if not stacktrace:
         return ""
 
-    text = _HEX_ADDR_RE.sub("<addr>", stacktrace)
+    # Normalize timestamps and UUIDs first to prevent line regexes from corrupting time colons
+    text = _TIMESTAMP_RE.sub("<timestamp>", stacktrace)
+    text = _UUID_RE.sub("<uuid>", text)
+    text = _HEX_ADDR_RE.sub("<addr>", text)
     text = _LINE_NUM_RE.sub("line <n>", text)
     text = _COLON_LINE_RE.sub(":<n>:", text)
-    text = _UUID_RE.sub("<uuid>", text)
-    text = _TIMESTAMP_RE.sub("<timestamp>", text)
 
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
     return "\n".join(lines)

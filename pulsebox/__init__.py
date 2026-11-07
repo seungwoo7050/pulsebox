@@ -1,5 +1,6 @@
 """pulsebox: Lightweight error fingerprinting and cron dead man's switch daemon."""
 
+from pulsebox.app import create_app
 from pulsebox.fingerprint import compute_fingerprint, normalize_stacktrace
 from pulsebox.models import (
     Base,
@@ -30,6 +31,7 @@ __all__ = [
     "PulseStore",
     "PulseWatchdog",
     "compute_fingerprint",
+    "create_app",
     "normalize_stacktrace",
 ]
 
