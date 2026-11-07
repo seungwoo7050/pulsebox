@@ -13,6 +13,7 @@ from pulsebox.models import (
     MonitorSnapshot,
     MonitorStatus,
 )
+from pulsebox.store import PulseStore
 
 __all__ = [
     "Base",
@@ -25,6 +26,7 @@ __all__ = [
     "MonitorRegisterRequest",
     "MonitorSnapshot",
     "MonitorStatus",
+    "PulseStore",
     "compute_fingerprint",
     "normalize_stacktrace",
 ]
