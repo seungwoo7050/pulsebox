@@ -14,6 +14,7 @@ from pulsebox.models import (
     MonitorStatus,
 )
 from pulsebox.store import PulseStore
+from pulsebox.watchdog import PulseWatchdog
 
 __all__ = [
     "Base",
@@ -27,6 +28,7 @@ __all__ = [
     "MonitorSnapshot",
     "MonitorStatus",
     "PulseStore",
+    "PulseWatchdog",
     "compute_fingerprint",
     "normalize_stacktrace",
 ]
