@@ -1,15 +1,30 @@
 from __future__ import annotations
 
-import re
-from datetime import datetime
-from typing import Literal
+from datetime import datetime, timezone
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 IssueStatus = Literal["OPEN", "RESOLVED", "REGRESSED"]
 MonitorStatus = Literal["OK", "LATE", "ALERTED"]
+
+
+def _ensure_utc(v: Any) -> Any:
+    if isinstance(v, datetime) and v.tzinfo is None:
+        return v.replace(tzinfo=timezone.utc)
+    return v
+
+
+UTCDateTime = Annotated[datetime, BeforeValidator(_ensure_utc)]
 
 
 class Base(DeclarativeBase):
@@ -27,7 +42,9 @@ class IssueGroupRow(Base):
     occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_alerted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class IssueEventRow(Base):
@@ -63,34 +80,20 @@ class CronMonitorRow(Base):
 class ErrorEventRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    service: str = Field(..., min_length=1, max_length=128)
-    exception_type: str = Field(..., min_length=1, max_length=256)
+    service: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
+    exception_type: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)
+    ]
     message: str = Field(default="")
     stacktrace: str = Field(default="")
-    environment: str = Field(default="production", min_length=1, max_length=64)
+    environment: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)
+    ] = "production"
     custom_fingerprint: str | None = Field(default=None, max_length=64)
-
-    @field_validator("service", "exception_type", "environment")
-    @classmethod
-    def validate_not_blank(cls, v: str) -> str:
-        val = v.strip()
-        if not val:
-            raise ValueError("field must not be empty or whitespace")
-        return val
-
-    @field_validator("custom_fingerprint")
-    @classmethod
-    def validate_custom_fingerprint(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        val = v.strip()
-        if not val:
-            return None
-        return val
 
 
 class IssueGroupSnapshot(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, from_attributes=True)
 
     fingerprint: str = Field(..., min_length=64, max_length=64)
     service: str
@@ -98,9 +101,9 @@ class IssueGroupSnapshot(BaseModel):
     title: str
     status: IssueStatus
     occurrence_count: int = Field(ge=1)
-    first_seen_at: datetime
-    last_seen_at: datetime
-    last_alerted_at: datetime | None = None
+    first_seen_at: UTCDateTime
+    last_seen_at: UTCDateTime
+    last_alerted_at: UTCDateTime | None = None
 
     @model_validator(mode="after")
     def validate_timestamps(self) -> IssueGroupSnapshot:
@@ -112,43 +115,31 @@ class IssueGroupSnapshot(BaseModel):
 class MonitorRegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    slug: str = Field(..., min_length=1, max_length=128)
-    service: str = Field(..., min_length=1, max_length=128)
+    slug: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True,
+            min_length=1,
+            max_length=128,
+            pattern=r"^[a-zA-Z0-9_-]+$",
+        ),
+    ]
+    service: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
     interval_seconds: int = Field(..., gt=0)
     grace_seconds: int = Field(default=60, ge=0)
     webhook_url: str | None = Field(default=None, max_length=1024)
 
-    @field_validator("slug")
-    @classmethod
-    def validate_slug(cls, v: str) -> str:
-        val = v.strip()
-        if not val:
-            raise ValueError("slug must not be empty")
-        if not re.fullmatch(r"[a-zA-Z0-9_-]+", val):
-            raise ValueError(
-                "slug must contain only alphanumeric characters, underscores, or hyphens"
-            )
-        return val
-
-    @field_validator("service")
-    @classmethod
-    def validate_service(cls, v: str) -> str:
-        val = v.strip()
-        if not val:
-            raise ValueError("service must not be empty")
-        return val
-
 
 class MonitorSnapshot(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, from_attributes=True)
 
     slug: str
     service: str
     interval_seconds: int = Field(gt=0)
     grace_seconds: int = Field(ge=0)
     status: MonitorStatus
-    last_ping_at: datetime | None = None
-    next_due_at: datetime | None = None
+    last_ping_at: UTCDateTime | None = None
+    next_due_at: UTCDateTime | None = None
     consecutive_misses: int = Field(ge=0)
     webhook_url: str | None = None
-    updated_at: datetime
+    updated_at: UTCDateTime

@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 from httpx import ASGITransport
+from typer.testing import CliRunner
 
 from pulsebox.app import create_app
+from pulsebox.cli import app as cli_app
 from pulsebox.fingerprint import compute_fingerprint, normalize_stacktrace
 from pulsebox.models import ErrorEventRequest, MonitorRegisterRequest
 from pulsebox.store import PulseStore
@@ -243,3 +245,39 @@ async def test_fastapi_e2e_endpoints() -> None:
         assert res.status_code == 200
         assert "pulsebox_events_ingested_total 1" in res.text
         assert "pulsebox_cron_alerts_total 0" in res.text
+
+
+@pytest.mark.asyncio
+async def test_watchdog_webhook_retry_success() -> None:
+    """Verify webhook sender retries on transient errors using tenacity."""
+    attempts = 0
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 2:
+            return httpx.Response(500, json={"error": "server temporary error"})
+        return httpx.Response(200, json={"status": "delivered"})
+
+    transport = httpx.MockTransport(mock_handler)
+    client = httpx.AsyncClient(transport=transport)
+    store = PulseStore()
+    watchdog = PulseWatchdog(store=store, http_client=client)
+
+    delivered = await watchdog.send_webhook("http://webhook.internal/alert", {"test": True})
+    assert delivered is True
+    assert attempts == 2
+
+
+def test_typer_cli_commands() -> None:
+    """Verify Typer CLI commands scan, ping, and issues operate without errors."""
+    runner = CliRunner()
+
+    res_scan = runner.invoke(cli_app, ["scan", "--db", "sqlite:///:memory:"])
+    assert res_scan.exit_code == 0
+    assert "All cron monitors are on schedule" in res_scan.output
+
+    res_issues = runner.invoke(cli_app, ["issues", "--db", "sqlite:///:memory:"])
+    assert res_issues.exit_code == 0
+    assert "No error issues found." in res_issues.output
+

@@ -4,6 +4,8 @@ import asyncio
 from typing import Any
 
 import httpx
+from prometheus_client import CollectorRegistry, Counter, generate_latest
+from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
 
 from pulsebox.models import ErrorEventRequest, IssueGroupSnapshot, MonitorSnapshot
 from pulsebox.store import PulseStore
@@ -17,54 +19,66 @@ class PulseWatchdog:
         store: PulseStore,
         default_webhook_url: str | None = None,
         http_client: httpx.AsyncClient | None = None,
+        registry: CollectorRegistry | None = None,
     ) -> None:
         self.store = store
         self.default_webhook_url = default_webhook_url
         self._custom_client = http_client
-        self._events_ingested = 0
-        self._issues_regressed = 0
-        self._cron_alerts = 0
+        self.registry = registry or CollectorRegistry()
+        self._events_counter = Counter(
+            "pulsebox_events_ingested",
+            "Total number of error events ingested",
+            registry=self.registry,
+        )
+        self._issues_counter = Counter(
+            "pulsebox_issues_regressed",
+            "Total number of resolved issues that regressed",
+            registry=self.registry,
+        )
+        self._cron_counter = Counter(
+            "pulsebox_cron_alerts",
+            "Total number of cron monitors alerted due to missed check-ins",
+            registry=self.registry,
+        )
 
     def record_event_ingested(self) -> None:
-        self._events_ingested += 1
+        self._events_counter.inc()
 
     def record_issue_regressed(self) -> None:
-        self._issues_regressed += 1
+        self._issues_counter.inc()
 
     def record_cron_alert(self, count: int = 1) -> None:
-        self._cron_alerts += count
+        self._cron_counter.inc(count)
 
     def format_metrics(self) -> str:
         """Render Prometheus exposition text format for core operational metrics."""
-        lines = [
-            "# HELP pulsebox_events_ingested_total Total number of error events ingested",
-            "# TYPE pulsebox_events_ingested_total counter",
-            f"pulsebox_events_ingested_total {self._events_ingested}",
-            "# HELP pulsebox_issues_regressed_total Total number of resolved issues that regressed",
-            "# TYPE pulsebox_issues_regressed_total counter",
-            f"pulsebox_issues_regressed_total {self._issues_regressed}",
-            (
-                "# HELP pulsebox_cron_alerts_total "
-                "Total number of cron monitors alerted due to missed check-ins"
-            ),
-            "# TYPE pulsebox_cron_alerts_total counter",
-            f"pulsebox_cron_alerts_total {self._cron_alerts}",
-        ]
-        return "\n".join(lines) + "\n"
+        return generate_latest(self.registry).decode("utf-8")
 
     async def send_webhook(self, url: str, payload: dict[str, Any]) -> bool:
-        """Deliver JSON webhook alert payload with timeout and error suppression."""
+        """Deliver JSON webhook alert payload with retry, timeout and error suppression."""
         if not url:
             return False
-        try:
+
+        async def _dispatch() -> bool:
             if self._custom_client is not None:
                 resp = await self._custom_client.post(url, json=payload, timeout=5.0)
-                return resp.is_success
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(url, json=payload)
-                return resp.is_success
+            else:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            return True
+
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=0.05, min=0.05, max=0.5),
+                reraise=True,
+            ):
+                with attempt:
+                    return await _dispatch()
         except Exception:
             return False
+        return False
 
     async def notify_issue(
         self,
@@ -108,7 +122,9 @@ class PulseWatchdog:
                     "service": monitor.service,
                     "consecutive_misses": monitor.consecutive_misses,
                     "status": monitor.status,
-                    "next_due_at": monitor.next_due_at.isoformat() if monitor.next_due_at else None,
+                    "next_due_at": monitor.next_due_at.isoformat()
+                    if monitor.next_due_at
+                    else None,
                 }
                 await self.send_webhook(target_url, payload)
 
